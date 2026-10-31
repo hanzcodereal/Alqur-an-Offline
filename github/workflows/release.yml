@@ -1,0 +1,180 @@
+name: Release Al-Qur'an Offline APK
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Build, Sign & Publish Release APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Run Quran Dataset Integrity Validation
+        run: |
+          chmod +x scripts/validate_dataset.py
+          python3 scripts/validate_dataset.py
+
+      - name: Run Hadith Dataset Integrity Validation
+        run: |
+          chmod +x scripts/validate_hadith_dataset.py
+          python3 scripts/validate_hadith_dataset.py
+
+      - name: Run Prayer Dataset Integrity Validation
+        run: |
+          chmod +x scripts/validate_prayer_dataset.py
+          python3 scripts/validate_prayer_dataset.py
+
+      - name: Run Daily Prayer Dataset Integrity Validation
+        run: |
+          chmod +x scripts/validate_daily_prayer_dataset.py
+          python3 scripts/validate_daily_prayer_dataset.py
+
+      - name: Run Asmaul Husna Dataset Integrity Validation
+        run: |
+          chmod +x scripts/validate_asmaul_husna_dataset.py
+          python3 scripts/validate_asmaul_husna_dataset.py
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run Unit Tests & Lint
+        run: ./gradlew clean testDebugUnitTest lintDebug --no-daemon --stacktrace
+
+      - name: Setup Signing Keystore (v1 + v2 + v3)
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Decoding release keystore from secrets..."
+            echo "$KEYSTORE_BASE64" | base64 --decode > release.keystore
+            echo "KEYSTORE_FILE=$GITHUB_WORKSPACE/release.keystore" >> $GITHUB_ENV
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
+            echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+          else
+            echo "Generating release keystore for automated signing..."
+            keytool -genkeypair -v \
+              -keystore release.keystore \
+              -alias alquran_release \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass alquranoffline \
+              -keypass alquranoffline \
+              -dname "CN=Al-Quran Offline, OU=Mobile, O=AlQuran, L=Jakarta, ST=DKI, C=ID"
+            echo "KEYSTORE_FILE=$GITHUB_WORKSPACE/release.keystore" >> $GITHUB_ENV
+            echo "KEYSTORE_PASSWORD=alquranoffline" >> $GITHUB_ENV
+            echo "KEY_ALIAS=alquran_release" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=alquranoffline" >> $GITHUB_ENV
+          fi
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Locate and Stage Release APK
+        id: stage_apk
+        run: |
+          mkdir -p release_artifacts
+          APK_FILE=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "No release APK found in app/build/outputs/apk/release!"
+            exit 1
+          fi
+          echo "Found APK at: $APK_FILE"
+          cp "$APK_FILE" release_artifacts/alquran-offline-v1.apk
+          echo "apk_path=release_artifacts/alquran-offline-v1.apk" >> $GITHUB_OUTPUT
+
+      - name: Verify APK Signatures (v1 + v2 + v3 Scheme)
+        run: |
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name apksigner | sort -V | tail -n 1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "apksigner not found in $ANDROID_HOME/build-tools"
+            exit 1
+          fi
+          echo "Using apksigner: $APKSIGNER"
+          SIGN_OUTPUT=$($APKSIGNER verify --verbose release_artifacts/alquran-offline-v1.apk)
+          echo "$SIGN_OUTPUT"
+          echo "$SIGN_OUTPUT" | grep -q "Verified using v1 scheme (JAR signing): true" || { echo "v1 signing check failed!"; exit 1; }
+          echo "$SIGN_OUTPUT" | grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" || { echo "v2 signing check failed!"; exit 1; }
+          echo "$SIGN_OUTPUT" | grep -q "Verified using v3 scheme (APK Signature Scheme v3): true" || { echo "v3 signing check failed!"; exit 1; }
+          echo "SUCCESS: APK is signed with v1, v2, and v3 schemes."
+
+      - name: Generate SHA-256 Checksum & Release Summary
+        run: |
+          cd release_artifacts
+          sha256sum alquran-offline-v1.apk > alquran-offline-v1.apk.sha256
+          APK_HASH=$(awk '{print $1}' alquran-offline-v1.apk.sha256)
+          echo "APK_SHA256=$APK_HASH" >> $GITHUB_ENV
+          echo "SHA-256: $APK_HASH"
+          echo "### Official Release Provenance & Checksum" >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifact:** \`alquran-offline-v1.apk\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA-256:** \`$APK_HASH\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Signatures:** Verified v1, v2, v3 schemes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Provenance ID:** \`quran-offline-hanzdev-2026-c9f2a87b\`" >> $GITHUB_STEP_SUMMARY
+          cd ..
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: alquran-offline-v1
+          path: release_artifacts/*
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            release_artifacts/alquran-offline-v1.apk
+            release_artifacts/alquran-offline-v1.apk.sha256
+          name: "Al-Qur'an Offline v1.0"
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          body: |
+            ## Al-Qur'an Offline v1.0 (Official Release)
+
+            Aplikasi Al-Qur'an dan Hadits 100% Offline, tanpa iklan, tanpa API eksternal, dan tanpa pelacakan data.
+
+            ### Informasi Rilis & Provenance
+            - **Versi:** 1.0 (versionCode: 1)
+            - **Pengembang:** Hanz Dev Official
+            - **Project ID:** `quran-offline-hanzdev-2026-c9f2a87b`
+            - **Skema Penandatanganan:** v1 (JAR) + v2 (APK Signature) + v3 (Android 9+)
+
+            ### Verifikasi Checksum (SHA-256)
+            ```text
+            ${{ env.APK_SHA256 }}  alquran-offline-v1.apk
+            ```
+
+            Untuk memverifikasi keaslian file APK yang diunduh:
+            ```bash
+            sha256sum -c alquran-offline-v1.apk.sha256
+            ```
