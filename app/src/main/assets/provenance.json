@@ -1,0 +1,11 @@
+{
+  "project_name": "Al-Qur'an Offline",
+  "project_id": "quran-offline-hanzdev-2026-c9f2a87b",
+  "author": "Hanz Dev Official",
+  "copyright": "© 2026 Hanz Dev Official",
+  "version_name": "1.0",
+  "version_code": 1,
+  "verified_offline": true,
+  "telemetry_enabled": false,
+  "internet_required": false
+}
