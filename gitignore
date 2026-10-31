@@ -1,0 +1,13 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+# quran.db dibuat otomatis dari app/db_parts/ saat build
+/app/src/main/assets/quran.db
